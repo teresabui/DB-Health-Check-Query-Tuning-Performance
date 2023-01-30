@@ -1,0 +1,67 @@
+SELECT verification_request.id, verification_request.vin, verification_request.ramp_id, verification_request.bay_location, verification_request.driver_id, verification_request.truck_id, verification_request.latitude, verification_request.longitude, verification_request.datetime_requested, verification_request.datetime_verified, verification_request.verified_by_id, verification_request.driver_firebase_token, verification_request.on_the_line_pic, verification_request.lf_wheel_pic, verification_request.rr_wheel_pic, verification_request.contact, verification_request.local_inspection, verification_request.delivery_data
+FROM verification_request 
+INNER JOIN driver ON (verification_request.driver_id = driver.id) 
+INNER JOIN truck ON (verification_request.truck_id =  truck.id  )
+WHERE (verification_request.datetime_verified IS NULL AND driver.driver_number = '1111' AND verification_request.ramp_id = 'BANFF' AND truck.truck_number = '1111' AND verification_request.verified_by_id IS NULL)
+
+Statistics:
+select count(distinct driver_id) from verification_request; -- 1545
+select count(distinct verified_by_id) from verification_request; -- 99
+select count(distinct datetime_verified) from verification_request; -- 32569
+select count(1) from verification_request where datetime_verified is null; ---0
+select count(1) from verification_request where verified_by_id is null; ---0
+select count(distinct ramp_id) from verification_request; --- 39
+select count(1) from verification_request; --- 32568
+select count(distinct driver_number) from driver; ---6469
+select count(1) from driver; -- 7557
+select count(distinct truck_number) from truck; -- 6441
+select count(1) from truck; --- 7661
+
+Execution plan before tuning:
+Nested Loop  (cost=4.87..39.96 rows=1 width=493) (actual time=0.123..0.125 rows=0 loops=1)
+  ->  Nested Loop  (cost=4.59..28.45 rows=1 width=493) (actual time=0.122..0.123 rows=0 loops=1)
+        ->  Bitmap Heap Scan on verification_request  (cost=4.30..12.13 rows=1 width=493) (actual time=0.122..0.122 rows=0 loops=1)
+              Recheck Cond: (verified_by_id IS NULL)
+              Filter: ((datetime_verified IS NULL) AND ((ramp_id)::text = 'BANFF'::text))
+              Heap Blocks: exact=106
+              ->  Bitmap Index Scan on verification_request_verified_by_id_5dd59586  (cost=0.00..4.30 rows=2 width=0) (actual time=0.028..0.028 rows=513 loops=1)
+                    Index Cond: (verified_by_id IS NULL)
+        ->  Index Scan using driver_pkey on driver  (cost=0.28..8.30 rows=1 width=4) (never executed)
+              Index Cond: (id = verification_request.driver_id)
+              Filter: (driver_number = '1111'::text)
+  ->  Index Scan using truck_pkey on truck  (cost=0.28..8.30 rows=1 width=4) (never executed)
+        Index Cond: (id = verification_request.truck_id)
+        Filter: ((truck_number)::text = '1111'::text)
+Planning time: 0.565 ms
+Execution time: 0.177 ms
+
+Explanation:
+Bitmap Index Scan on the table verification_request.verified_by_id returns 513 rows => there is no NULL value in the column verified_by_id => Bitmap Heap Scan on the table “verification_request” to read needed data from the query. However, after applying the filter, only 1 row is returned => high IO read.
+However, we cannot avoid Bitmap Heap Scan on the table “verification_request” because most of the data is retrieved from this table => The idea is that allowing “Bitmap Heap Scan” is as less as possible.
+
+Suggestion:
+There are two indexes for the column “company_id” on the table driver as below:
+The index “driver_company_id_566316a2” includes the column “company_id”
+The UNIQUE index “unique_driver” includes the column “company_id” and “driver_number”
+There is no index on “driver.driver_number”
+There is no index on “driver.truck_number” and “driver.driver_number”.
+
+⇒ Therefore, suggest that:
+drop index driver_company_id_566316a2 cascade;
+create index driver_drivernb on driver(driver_number); 
+create index truck_trucknb_drivenb on truck(truck_number,driver_number);
+
+Execution plan after tuning (no row returns after filters => no heap scan.)
+Nested Loop  (cost=0.85..28.06 rows=1 width=493) (actual time=0.007..0.008 rows=0 loops=1)
+  ->  Nested Loop  (cost=0.57..16.55 rows=1 width=493) (actual time=0.006..0.007 rows=0 loops=1)
+        Join Filter: (verification_request.driver_id = driver.id)
+        ->  Index Scan using verification_request_verified_by_id_5dd59586 on verification_request  (cost=0.29..8.23 rows=1 width=493) (actual time=0.005..0.006 rows=0 loops=1)
+              Index Cond: (verified_by_id IS NULL)
+              Filter: ((datetime_verified IS NULL) AND ((ramp_id)::text = '27'::text))
+        ->  Index Scan using driver_drivernb on driver  (cost=0.28..8.30 rows=1 width=4) (never executed)
+              Index Cond: (driver_number = '1111'::text)
+  ->  Index Scan using truck_pkey on truck  (cost=0.28..8.30 rows=1 width=4) (never executed)
+        Index Cond: (id = verification_request.truck_id)
+        Filter: ((truck_number)::text = '1111'::text)
+Planning time: 0.783 ms
+Execution time: 0.050 ms
