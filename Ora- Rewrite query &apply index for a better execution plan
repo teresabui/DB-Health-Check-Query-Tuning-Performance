@@ -1,0 +1,53 @@
+This query  took over 100 seconds per execution (cached) everyday
+
+select tab1.company,tab1.i_mfg,tab1.ramp,tab1.rampname,tab1.MTD_VIN,tab1.YTD_VIN 
+from
+(    select r.company,i.mfg I_MFG,i.ramp,r.rampname,    count(unique case when to_char(i.inspdate,'YYYY-MM') ='2021-11' then i.vin end) as MTD_VIN,     
+count(unique case when to_char(i.inspdate,'YYYY') ='2021'  then i.vin end) as YTD_VIN     
+from vehicleadmin.inspect i, vehicleadmin.ramp r    
+where i.ramp=r.TRIM_RAMP_ID    and (i.empno!='DEALER' and i.empno!='OEM')    
+and i.inspdate between to_date('01/01/2021','mm/dd/yyyy') and to_date('11/04/2021','mm/dd/yyyy')    
+and (case when i.insptype='08' then 1        when (i.insptype='02' and i.ramp in ('EP','TX007','5L') ) then 1         else 0         END=1 )    
+group by r.company,i.mfg,i.ramp,r.rampname ) tab1, 
+(    select r.company,i.mfg I_MFG,i.ramp,r.rampname,    count(unique case when to_char(i.inspdate,'YYYY-MM') ='2021-11' then m.vin end) as MTD_MDR,     
+count(unique case when to_char(i.inspdate,'YYYY') ='2021' then m.vin end) as YTD_MDR     
+from vehicleadmin.inspect i, vehicleadmin.ramp r, mdradmin.master m, mdradmin.local l    
+where i.ramp=r.TRIM_RAMP_ID    and (i.empno!='DEALER' and i.empno!='OEM')    and i.ramp=l.loc_ramp    and i.vin=m.vin    and m.site='Jumped Chock(s)'    
+and i.inspdate between to_date('01/01/2021','mm/dd/yyyy') and to_date('11/04/2021','mm/dd/yyyy')     
+and (case when i.insptype='08' then 1        when (i.insptype='02' and i.ramp in ('EP','TX007','5L') ) then 1         else 0         END=1 )    
+group by r.company,i.mfg,i.ramp,r.rampname ) tab2 
+where tab1.company=tab2.company(+) and tab1.i_mfg=tab2.i_mfg(+) and tab1.ramp=tab2.ramp(+) and tab1.rampname=tab2.rampname(+) 
+order by tab1.company,tab1.rampname
+=======================================================================================================================
+Solution: To tune the performance of this query, I create 1 index on the table "ramp" and re-write the query as below
+=======================================================================================================================
+
+WITH tab1 AS 
+(
+SELECT  i.mfg I_MFG,i.ramp, i.VIN, i.inspdate, r.company,r.rampname
+FROM vehicleadmin.inspect i INNER JOIN vehicleadmin.ramp r  on i.ramp=r.TRIM_RAMP_ID
+WHERE (i.empno!='DEALER' and i.empno!='OEM') 
+and i.inspdate between to_date('01/01/2021','mm/dd/yyyy') and to_date('11/18/2021','mm/dd/yyyy') 
+AND i.insptype='08'
+union all	   
+SELECT i.mfg I_MFG,i.ramp, i.VIN, i.inspdate, r.company,r.rampname 
+FROM vehicleadmin.inspect i INNER JOIN vehicleadmin.ramp r  on i.ramp=r.TRIM_RAMP_ID
+WHERE (i.empno!='DEALER' and i.empno!='OEM') 
+and i.inspdate between to_date('01/01/2021','mm/dd/yyyy') and to_date('11/18/2021','mm/dd/yyyy') 
+AND (i.insptype='02' and i.ramp in ('EP','TX007','5L'))
+)
+select  company,i_mfg,ramp,rampname,
+count(unique case when to_char(inspdate,'YYYY-MM') ='2021-11' then vin end) as MTD_VIN,     
+count(unique case when to_char(inspdate,'YYYY') ='2021'  then vin end) as YTD_VIN  		
+from tab1
+group by company,i_mfg,ramp,rampname ;
+
+============================================================================================================================
+ Result after tuning query perf:
+ ============================================================================================================================
+Original query: 
+The 1st run without cache took 203 seconds. Average execution (current status on TCM1 server) took 100-130 seconds
+
+Tuned query (the result is on prod server):
+
+The 1st execution without cache took 45s. The 2nd execution took 10s-12s. Will monitor this query for average execution when it’s deployed on prod server.
