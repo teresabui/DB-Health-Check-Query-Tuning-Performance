@@ -1,0 +1,59 @@
+SELECT inspection.id, inspection.mileage, inspection.mileage_unit, inspection.gas, inspection.vehicle_id, inspection.inspection_rail_id,
+inspection.inspection_marine_id, inspection.inspection_truck_id, inspection.latitude, inspection.longitude, inspection.start_datetime, 
+inspection.end_datetime, inspection.original_inspection_id, inspection.bay, inspection.location, inspection.dealer, inspection.empno, 
+inspection.sequence, inspection.misc, inspection.inspection_type_id, inspection.ramp_id, inspection.manufacturer_id, inspection.created_by,
+inspection.created_date, inspection.updated_by, inspection.updated_date
+FROM inspection 
+INNER JOIN inspection_truck ON (inspection.inspection_truck_id = inspection_truck.id)
+WHERE 
+( inspection_truck.driver_number = '1111' AND inspection_truck.truck_number = '1111' AND inspection.ramp_id = 'BANFF'
+and inspection.created_date > '2020-01-01'  
+)
+
+Statistics:
+select count(distinct ramp_id) from inspection; --- 57
+select count(1) from inspection; ---310706
+select count(1) from inspection_truck; --- 160170
+
+Execution plan before tuning:
+Nested Loop  (cost=17.35..5701.19 rows=1 width=174) (actual time=0.916..38.314 rows=12 loops=1)
+  Buffers: shared hit=336 read=43
+  ->  Bitmap Heap Scan on inspection  (cost=16.93..1830.30 rows=580 width=174) (actual time=0.904..1.060 rows=81 loops=1)
+        Recheck Cond: ((ramp_id)::text = 'BANFF'::text)
+        Filter: (created_date > '2020-01-01'::date)
+        Heap Blocks: exact=51
+        Buffers: shared hit=54 read=1
+        ->  Bitmap Index Scan on inspection_ramp_id_c5fc8770_like  (cost=0.00..16.79 rows=582 width=0) (actual time=0.891..0.891 rows=81 loops=1)
+              Index Cond: ((ramp_id)::text = 'BANFF'::text)
+              Buffers: shared hit=3 read=1
+  ->  Index Scan using inspection_truck_pkey on inspection_truck  (cost=0.42..6.66 rows=1 width=4) (actual time=0.459..0.459 rows=0 loops=81)
+        Index Cond: (id = inspection.inspection_truck_id)
+        Filter: ((driver_number = '1111'::text) AND (truck_number = '1111'::text))
+        Rows Removed by Filter: 1
+        Buffers: shared hit=282 read=42
+---------------------------------------------------------------------------------------------------------------------------------------------------------
+Planning time: 0.334 ms
+Execution time: 38.369 ms
+---------------------------------------------------------------------------------------------------------------------------------------------------------
+
+Explanation: Looking at the execution plan before tuning, the table Inspection is the driving table, however there is no filter on it => Bitmap Heap Scan on inspection. After heap scan, recheck with ramp_id, and filter on created_date to find the exact block => high cost.
+In the query, most of the filters are on the table inspection_truck to reduce the number of reads. Therefore, try to create an index on this table in order to adjust the execution plan. Once, there is an index on the table inspection_truck, it can be considered as a driving table, and index scan can be used effectively (look at the execution plan after tuning)
+
+Suggestion:
+create index inspection_truck_drivernb_trucknb on inspection_truck (driver_number, truck_number);
+
+Execution plan after tuning:
+Nested Loop  (cost=0.84..16.94 rows=1 width=174) (actual time=0.028..0.102 rows=12 loops=1)
+  Buffers: shared hit=72
+  ->  Index Scan using inspection_truck_drivernb_trucknb on inspection_truck  (cost=0.42..8.44 rows=1 width=4) (actual time=0.018..0.031 rows=15 loops=1)
+        Index Cond: ((driver_number = '1111'::text) AND (truck_number = '1111'::text))
+        Buffers: shared hit=12
+  ->  Index Scan using inspection_inspection_truck_id_545aed1d on inspection  (cost=0.42..8.49 rows=1 width=174) (actual time=0.003..0.004 rows=1 loops=15)
+        Index Cond: (inspection_truck_id = inspection_truck.id)
+        Filter: ((created_date > '2020-01-01'::date) AND ((ramp_id)::text = 'BANFF'::text))
+        Rows Removed by Filter: 0
+        Buffers: shared hit=60
+---------------------------------------------------------------------------------------------------------------------------------------------------------        
+Planning time: 0.347 ms
+Execution time: 0.142 ms
+---------------------------------------------------------------------------------------------------------------------------------------------------------
